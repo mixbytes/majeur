@@ -168,7 +168,7 @@ These patterns were repeatedly flagged by weaker auditors and confirmed as non-i
 
 ## Known Findings (Do Not Re-Report)
 
-The following 18 findings have been identified and reviewed across prior audits. **Do not re-report these.** If your analysis surfaces one of these, note it as "confirmed duplicate of Known Finding #N" and move on.
+The following 23 findings have been identified and reviewed across prior audits. **Do not re-report these.** If your analysis surfaces one of these, note it as "confirmed duplicate of Known Finding #N" and move on.
 
 | # | Finding | Severity | Key Detail |
 |---|---------|----------|------------|
@@ -180,8 +180,8 @@ The following 18 findings have been identified and reviewed across prior audits.
 | 6 | Zero-winner futarchy lockup | Low | If no one votes for winning side, pool tokens are permanently inaccessible via `cashOutFutarchy`. Funds remain in DAO treasury |
 | 7 | Blacklistable token ragequit DoS | Low | If treasury token blacklists DAO, ragequit reverts for that token. Caller can omit it |
 | 8 | Fee-on-transfer token accounting | Info | Ragequit assumes full delivery. Fee tokens short-change recipients |
-| 9 | CREATE2 salt not bound to `msg.sender` | Info | Anyone can front-run deployment to claim a vanity address. No fund loss |
-| 10 | Permit/proposal ID namespace overlap | Info | Same `keccak256` scheme — collision astronomically unlikely (2^256 space) |
+| 9 | CREATE2 salt not bound to `msg.sender` | Info | Anyone can front-run deployment to claim a vanity address. No fund loss (see KF#23 for Tribute escalation) |
+| 10 | Permit/proposal ID namespace overlap | Info | Same `keccak256` scheme — collision astronomically unlikely (2^256 space). See KF#19, KF#21 for practical exploitation angles |
 | 11 | `proposalThreshold == 0` griefing | Low | Permissionless proposal opening enables spam and minted futarchy reward farming |
 | 12 | `init()` missing `quorumBps` range validation | Info | `setQuorumBps` validates, but `init()` does not. Privileged-only initialization |
 | 13 | Loot supply not snapshotted for futarchy earmarks | Info | Auto-futarchy earmarks use live loot supply, not snapshotted |
@@ -190,6 +190,11 @@ The following 18 findings have been identified and reviewed across prior audits.
 | 16 | `spendPermit` doesn't check `executed` flag | Low | Allows double-execution if DAO creates both proposal and permit with identical params. Requires two governance votes. `_burn6909` is the actual replay guard |
 | 17 | Public futarchy attachment + zero-quorum premature NO-resolution | Medium | With `quorumAbsolute == 0 && quorumBps == 0`, `state()` returns `Defeated` at line 476 with zero votes. Attacker calls `fundFutarchy{value:1}` then `resolveFutarchyNo` → `castVote` permanently reverts. Configuration-dependent. Fix: require `Expired` only in `resolveFutarchyNo` |
 | 18 | `fundFutarchy` accepts executed/cancelled proposal IDs | Medium | `fundFutarchy` checks `F.resolved` but not `executed[id]`. After cancel/execute, pools can still be funded but never resolved — `resolveFutarchyNo` rejects `executed[id]`, and voting/execution paths are dead. Funds permanently stuck. Fix: add `if (executed[id]) revert AlreadyExecuted();` |
+| 19 | `bumpConfig` emergency brake bypass via raw proposal IDs | Medium | `openProposal`, `castVote`, `state`, `queue` accept raw IDs without config validation. A coalition can pre-stage a future-config proposal and carry it across a bump. Extends KF#10. Fix: store originating config on open, reject stale-config lifecycle actions |
+| 20 | Tribute bait-and-switch — escrow terms not bound to claim key | Medium | `tributes` keyed by `(proposer, dao, tribTkn)` only. Proposer can cancel and repost with smaller `tribAmt` between approval and execution. `claimTribute` reads current stored values. Fix: bind claim to expected terms via nonce/hash |
+| 21 | Permit IDs enter proposal/futarchy lifecycle | Medium | `openProposal`, `castVote`, `fundFutarchy`, `resolveFutarchyNo` never check `isPermitReceipt[id]`. Shareholder can open permit as proposal, fund futarchy, resolve NO, and cash out. Extends KF#10. Fix: add `if (isPermitReceipt[id]) revert` guards |
+| 22 | DAICO LP drift cap uses `tribForLP` instead of `totalTrib` | Medium | Comment says `totalTrib * spot / (2*spot - rate)` but code uses `tribForLP`. Underestimates LP leg when pool spot > OTC rate, leaking extra sale inventory to buyers. Fix: replace `tribForLP` with total tribute in `_initLP` and `_quoteLPUsed` |
+| 23 | Counterfactual Tribute theft via summon frontrun | Low-Medium | `proposeTribute` accepts undeployed DAO addresses. `summon` salt excludes `initCalls`. Attacker frontruns with same salt + malicious initCalls to claim pre-deposited tribute escrows. Extends KF#9. Fix: include `initCalls` in salt, or require deployed DAO |
 
 ---
 
@@ -298,7 +303,7 @@ Before submitting your report, verify:
 - [ ] Every finding has a concrete attack path with specific function calls and line numbers
 - [ ] Every finding includes a disproof attempt explaining what you checked
 - [ ] Every finding has a confidence score (0-100)
-- [ ] No finding duplicates the 18 Known Findings
+- [ ] No finding duplicates the 23 Known Findings
 - [ ] No finding matches a False Positive Pattern
 - [ ] Severity ratings follow the adjustment rules (especially the privileged-role rule)
 - [ ] All 10 vulnerability categories have a conclusion (finding or "no issues found")
