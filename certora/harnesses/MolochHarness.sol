@@ -376,5 +376,24 @@ contract MolochHarness {
         return voteWeight[id][voter];
     }
 
+    function getForVotes(uint256 id) external view returns (uint96) {
+        return tallies[id].forVotes;
+    }
+
+    function getAgainstVotes(uint256 id) external view returns (uint96) {
+        return tallies[id].againstVotes;
+    }
+
+    function getAbstainVotes(uint256 id) external view returns (uint96) {
+        return tallies[id].abstainVotes;
+    }
+
+    function getState(uint256 id) external view returns (uint8) {
+        if (executed[id]) return uint8(ProposalState.Executed);
+        if (snapshotBlock[id] == 0) return uint8(ProposalState.Unopened);
+        if (queuedAt[id] != 0) return uint8(ProposalState.Queued);
+        return uint8(ProposalState.Active);
+    }
+
     receive() external payable {}
 }

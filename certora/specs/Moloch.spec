@@ -1,5 +1,5 @@
 // Moloch.spec — Formal verification of Moloch core DAO contract
-// Invariants 3-8, 11, 13-15, 30-40, 43-49, 94 from certora/invariants.md
+// Invariants 1, 3-8, 10-11, 13-17, 30-41, 43-49, 94 from certora/invariants.md
 
 methods {
     // ERC-6909
@@ -63,6 +63,10 @@ methods {
     function autoFutarchyCap() external returns (uint256) envfree;
     function rewardToken() external returns (address) envfree;
     function config() external returns (uint64) envfree;
+    function getForVotes(uint256) external returns (uint96) envfree;
+    function getAgainstVotes(uint256) external returns (uint96) envfree;
+    function getAbstainVotes(uint256) external returns (uint96) envfree;
+    function getState(uint256) external returns (uint8) envfree;
     function shares() external returns (address) envfree;
     function loot() external returns (address) envfree;
     function badges() external returns (address) envfree;
@@ -73,6 +77,32 @@ methods {
     function _.getVotes(address) external => NONDET;
     function _.totalSupply() external => NONDET;
 }
+
+// ──────────────────────────────────────────────────────────────────
+// Definitions
+// ──────────────────────────────────────────────────────────────────
+
+definition CVL_Executed() returns uint8 = 6;
+
+// ──────────────────────────────────────────────────────────────────
+// Invariant 1: ERC-6909 totalSupply[id] equals sum of balanceOf
+// ──────────────────────────────────────────────────────────────────
+
+ghost mapping(uint256 => mathint) g_sumBalances6909 {
+    init_state axiom forall uint256 id. g_sumBalances6909[id] == 0;
+}
+
+hook Sstore balanceOf[KEY address owner][KEY uint256 id] uint256 newVal (uint256 oldVal) {
+    g_sumBalances6909[id] = g_sumBalances6909[id] + newVal - oldVal;
+}
+
+hook Sload uint256 val balanceOf[KEY address owner][KEY uint256 id] {
+    require to_mathint(val) <= g_sumBalances6909[id],
+        "SAFE: individual balance cannot exceed sum of all balances";
+}
+
+invariant totalSupplyIsSumOfBalances6909(uint256 id)
+    to_mathint(totalSupply(id)) == g_sumBalances6909[id];
 
 // ──────────────────────────────────────────────────────────────────
 // Invariant 3: ERC-6909 transfer and transferFrom revert when
@@ -557,6 +587,92 @@ rule badgesAddressImmutable(env e, method f, calldataarg args) {
 
     assert after == before,
         "Invariant 94: badges address must never change";
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Invariant 10: Executed state is terminal — cannot transition
+// to any other state
+// ──────────────────────────────────────────────────────────────────
+
+rule executedStateIsTerminal(env e, method f, calldataarg args, uint256 id) {
+    require getState(id) == CVL_Executed();
+
+    f(e, args);
+
+    assert getState(id) == CVL_Executed(),
+        "Invariant 10: Executed state cannot transition to any other state";
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Invariant 16: castVote post-conditions — hasVoted and voteWeight
+// are set correctly after a successful vote
+// ──────────────────────────────────────────────────────────────────
+
+rule castVotePostConditions(env e, uint256 id, uint8 support) {
+    require !getExecuted(id);
+    require getHasVoted(id, e.msg.sender) == 0;
+    require support <= 2;
+    require getSnapshotBlock(id) != 0;
+    require e.msg.value == 0, "SAFE: not payable";
+
+    castVote(e, id, support);
+
+    assert to_mathint(getHasVoted(id, e.msg.sender)) == to_mathint(support) + 1,
+        "Invariant 16: hasVoted must equal support + 1";
+    assert getVoteWeight(id, e.msg.sender) > 0,
+        "Invariant 16: voteWeight must be non-zero after successful vote";
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Invariant 17: castVote tally integrity — only the relevant tally
+// component changes; others remain unchanged
+// ──────────────────────────────────────────────────────────────────
+
+rule castVoteTallyIntegrity(env e, uint256 id, uint8 support) {
+    require e.msg.value == 0, "SAFE: not payable";
+
+    uint96 forBefore = getForVotes(id);
+    uint96 againstBefore = getAgainstVotes(id);
+    uint96 abstainBefore = getAbstainVotes(id);
+
+    castVote(e, id, support);
+
+    // Other tally components unchanged
+    assert support != 1 => getForVotes(id) == forBefore,
+        "Invariant 17: forVotes unchanged when not voting for";
+    assert support != 0 => getAgainstVotes(id) == againstBefore,
+        "Invariant 17: againstVotes unchanged when not voting against";
+    assert support != 2 => getAbstainVotes(id) == abstainBefore,
+        "Invariant 17: abstainVotes unchanged when not voting abstain";
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Invariant 41: All governance parameter setters revert if
+// msg.sender != address(this) (onlyDAO)
+// ──────────────────────────────────────────────────────────────────
+
+rule governanceSettersRevertIfNotDAO(env e, method f, calldataarg args)
+filtered {
+    f -> f.selector == sig:setProposalThreshold(uint96).selector
+      || f.selector == sig:setProposalTTL(uint64).selector
+      || f.selector == sig:setTimelockDelay(uint64).selector
+      || f.selector == sig:setQuorumAbsolute(uint96).selector
+      || f.selector == sig:setMinYesVotesAbsolute(uint96).selector
+      || f.selector == sig:setQuorumBps(uint16).selector
+      || f.selector == sig:setRagequittable(bool).selector
+      || f.selector == sig:setRenderer(address).selector
+      || f.selector == sig:setAutoFutarchy(uint256, uint256).selector
+      || f.selector == sig:setFutarchyRewardToken(address).selector
+      || f.selector == sig:setPermitReceipt(uint256).selector
+      || f.selector == sig:bumpConfig().selector
+      || f.selector == sig:setSale(address, uint256, uint256, bool, bool, bool).selector
+      || f.selector == sig:setAllowance(address, address, uint256).selector
+} {
+    require e.msg.sender != currentContract;
+
+    f@withrevert(e, args);
+
+    assert lastReverted, "Invariant 41: governance setters must revert when sender != DAO";
 }
 
 // ──────────────────────────────────────────────────────────────────

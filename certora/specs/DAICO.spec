@@ -1,5 +1,5 @@
 // DAICO.spec — Formal verification of DAICO (sale + tap + LP) contract
-// Invariants 106-118 from certora/invariants.md
+// Invariants 106-118, 116 from certora/invariants.md
 
 methods {
     // Sale config
@@ -259,6 +259,34 @@ rule setLPConfigRevertsOnBadBps(env e, address tribTkn, uint16 lpBps, uint16 max
     setLPConfig@withrevert(e, tribTkn, lpBps, maxSlipBps, feeOrHook);
 
     assert lastReverted, "Invariant 118: setLPConfig must revert when lpBps >= 10000";
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Invariant 116: claimTap amount is at most min(owed, daoTapBalance)
+// ──────────────────────────────────────────────────────────────────
+
+rule claimTapAmountCapped(env e, address dao) {
+    uint128 rate = getTapRatePerSec(dao);
+    uint64 lastClaimBefore = getTapLastClaim(dao);
+    uint256 available = getDaoTapBalance(dao);
+
+    require rate > 0;
+    require getTapOps(dao) != 0;
+    require e.msg.value == 0, "SAFE: not payable";
+    require e.block.timestamp <= max_uint64,
+        "SAFE: block.timestamp fits in uint64";
+    require to_mathint(e.block.timestamp) > to_mathint(lastClaimBefore),
+        "SAFE: time must have elapsed";
+
+    mathint elapsed = to_mathint(e.block.timestamp) - to_mathint(lastClaimBefore);
+    mathint owed = to_mathint(rate) * elapsed;
+
+    uint256 claimed = claimTap(e, dao);
+
+    assert to_mathint(claimed) <= owed,
+        "Invariant 116: claimed must not exceed owed";
+    assert to_mathint(claimed) <= to_mathint(available),
+        "Invariant 116: claimed must not exceed available balance";
 }
 
 // ──────────────────────────────────────────────────────────────────
