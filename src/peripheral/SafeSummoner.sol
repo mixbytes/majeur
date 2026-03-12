@@ -48,14 +48,6 @@ address constant MOLOCH_IMPL = 0x643A45B599D81be3f3A68F37EB3De55fF10673C1;
 /// @title SafeSummoner
 /// @notice Safe wrapper around the deployed Summoner that enforces audit-derived
 /// configuration guidance and builds initCalls from a typed struct.
-///
-/// @dev Audit findings addressed:
-///   KF#11  — Enforces proposalThreshold > 0 (prevents front-run cancel, proposal spam)
-///   KF#17  — Enforces non-zero quorum when futarchy is configured (prevents premature NO-resolution)
-///   KF#2   — Blocks quorumBps + minting sale combo (supply manipulation via buy → ragequit)
-///   KF#12  — Validates quorumBps range at summon time (init skips this check)
-///   Config — Requires proposalTTL > 0 (prevents proposals lingering indefinitely)
-///   Config — Requires proposalTTL > timelockDelay (prevents proposals expiring in queue)
 contract SafeSummoner {
     error QuorumBpsOutOfRange();
     error ProposalThresholdRequired();
