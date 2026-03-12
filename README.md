@@ -637,7 +637,7 @@ forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
 
 ## Audits
 
-Moloch.sol has been scanned by twenty-one independent AI audit tools. Reports with per-finding review notes are in [`/audit`](./audit/).
+Moloch.sol has been scanned by twenty-three independent AI audit tools. Reports with per-finding review notes are in [`/audit`](./audit/). Formal verification specs and harnesses are in [`/certora`](./certora/).
 
 | Auditor | Type | Findings | Report |
 |---------|------|----------|--------|
@@ -649,7 +649,7 @@ Moloch.sol has been scanned by twenty-one independent AI audit tools. Reports wi
 | [Cyfrin Solskill](./audit/cyfrin.md) | [Development standards](https://github.com/Cyfrin/solskill) | 32 standards evaluated (21 compliant, 5 partial, 3 non-compliant by design, 3 N/A) | Strong adherence, 2 trivial actionable items |
 | [SCV Scan](./audit/scvscan.md) | [Vulnerability scan (36 classes)](https://github.com/kadenzipfel/scv-scan) | 3 confirmed (2 Low, 1 Informational) from 36 classes | All duplicates of prior findings, no production blockers |
 | [QuillShield](./audit/quillshield.md) | [Multi-layer audit (8 plugins)](https://github.com/quillai-network/qs_skills) | 8 findings (3 Medium, 3 Low, 2 Info) | All duplicates or design tradeoffs, no production blockers |
-| [Archethect SC-Auditor](./audit/archethect.md) | [Map-Hunt-Attack (9 risk patterns)](https://github.com/Archethect/sc-auditor) | 0 confirmed (6 spots falsified) | All suspicious spots falsified, no production blockers |
+| [Archethect SC-Auditor](./audit/archethect.md) | [Map-Hunt-Attack + MCP tools (Slither, Aderyn, Solodit, Cyfrin checklist)](https://github.com/Archethect/sc-auditor) | 0 novel (8 spots falsified, 397 Slither + 21 Aderyn findings triaged, 1 KF#8 duplicate via Solodit) | V2 re-run with full MCP integration validates V1 manual results, no production blockers |
 | [HackenProof Triage](./audit/hackenproof.md) | [Bug bounty triage (severity re-classification)](https://github.com/hackenproof-public/skills) | 14 triaged: 0 Critical, 0 High, 2 Medium, 5 Low, 5 OOS | No Critical/High under bounty standards |
 | [Forefy](./audit/forefy.md) | [Multi-expert audit (10 fv-sol categories + governance context)](https://github.com/forefy/.context) | 8 Low (1 valid, 2 questionable, 5 dismissed) | All duplicates, no novel findings, no production blockers |
 | [Claudit (Solodit)](./audit/claudit.md) | [Prior art cross-reference (20k+ real findings)](https://github.com/marchev/claudit) | 12 patterns searched, 0 novel | Validates defenses against Nouns/Olympus/PartyDAO exploits |
@@ -662,8 +662,10 @@ Moloch.sol has been scanned by twenty-one independent AI audit tools. Reports wi
 | [ZeroSkills Slot Sleuth](./audit/zeroskills.md) | [EVM storage-safety scan (5-phase)](https://github.com/zerocoolailabs/ZeroSkills) | 0 | No storage-safety vulnerabilities; no manual slot arithmetic, no upgradeable proxies, no lost writes |
 | [Qwen](./audit/qwen.md) | [3-round AI audit (Qwen3.5-Plus)](https://chat.qwen.ai/) | 1 Medium, 1 Low, 1 Info (all duplicates) | No novel findings, competent methodology compliance |
 | [ChatGPT Pro (GPT 5.4 Pro)](./audit/chatgptpro.md) | [3-round AI audit (systematic → economic → triager)](https://chat.openai.com/) | 1 Medium (novel), 1 Low, 1 Info (2 duplicates) | 1 novel finding (dead futarchy pools on executed IDs), no production blockers |
+| [Certora FV](./audit/certora.md) | [Formal verification (142 properties, 7 contracts)](./certora/) | 1 Low, 2 Informational (all acknowledged, by design) | 126 invariants verified; L-01 tap forfeiture is intentional Moloch exit-rights design |
+| [Grimoire](./audit/grimoire.md) | [Agentic audit (4 sigils + 3 familiars)](https://github.com/JoranHonig/grimoire) | 10 confirmed (1 High, 4 Medium, 5 Low, 2 Info — all duplicates) | 0 novel; adversarial triage dismissed 3 false positives, reentrancy surface fully clean |
 
-**No production blockers were identified across any audit.** Five novel findings were surfaced across twenty-one scans. Configuration-dependent concerns are enforced by [`SafeSummoner`](./src/peripheral/SafeSummoner.sol); code-level issues are candidates for v2 hardening.
+**No production blockers were identified across any audit.** Five novel findings were surfaced across twenty-three scans. Configuration-dependent concerns are enforced by [`SafeSummoner`](./src/peripheral/SafeSummoner.sol); code-level issues are candidates for v2 hardening.
 
 **Novel findings (5):**
 1. Vote receipt transferability breaks `cancelVote` (Pashov — Low, design tradeoff)
@@ -674,20 +676,24 @@ Moloch.sol has been scanned by twenty-one independent AI audit tools. Reports wi
 
 **Tool ranking by signal quality:**
 - **ChatGPT (GPT 5.4)** produced the single highest-impact finding (KF#17, Medium) with the best signal-to-noise ratio (1 novel from 2 total findings, 50%). Its architecture assessment — identifying the boundary between live governance state and prediction-market settlement — is the clearest articulation of the futarchy design tension.
-- **ChatGPT Pro (GPT 5.4 Pro)** surfaced the 5th novel finding (KF#18, Medium) — `fundFutarchy` missing `executed[id]` check creates permanently stuck pools on dead proposals. Signal-to-noise: 1 novel from 3 findings (33%). The reentrancy inventory in Category 1 is the most thorough across all 21 audits. LOW-2 (tombstoning) is KF#11 and INFORMATIONAL-3 (auto-futarchy overcommit) was found by 6 prior audits.
+- **ChatGPT Pro (GPT 5.4 Pro)** surfaced the 5th novel finding (KF#18, Medium) — `fundFutarchy` missing `executed[id]` check creates permanently stuck pools on dead proposals. Signal-to-noise: 1 novel from 3 findings (33%). The reentrancy inventory in Category 1 is the most thorough across all 23 audits. LOW-2 (tombstoning) is KF#11 and INFORMATIONAL-3 (auto-futarchy overcommit) was found by 6 prior audits.
 - **Pashov Skills** surfaced the most novel findings (2) via 5 parallel agents with adversarial reasoning. Higher noise (12 findings, 17% novel rate) but broader coverage.
 - **Claude (Opus 4.6)** identified a subtle design observation (post-queue voting) that no other tool found, plus the `spendPermit` missing `executed[id]` check (a sharper angle on KF#10, later catalogued as KF#16).
 - **Trail of Bits** and **Cyfrin** provided unique non-vulnerability value: maturity scoring (2.67/4.0) and standards compliance (21/32 compliant), respectively.
 - **Claudit** validated defenses against real-world exploits (Nouns, Olympus, PartyDAO) — unique cross-reference approach.
 - **Octane** produced the most raw findings (49) with 4 valid observations. While none were first-ever novel, Octane provided the most detailed early articulation of the auto-futarchy minted-reward farming vector (vuln #4) — later confirmed by Pashov, Forefy, QuillShield, ChatGPT, ChatGPT Pro, and Qwen. High volume with broad surface coverage — useful for exhaustive first-pass scanning.
 - **Gemini (Gemini 3)** and **DeepSeek (V3.2 Speciale)** used the same SECURITY.md prompt as ChatGPT (GPT 5.4) and ChatGPT Pro (GPT 5.4 Pro) but produced zero novel findings, demonstrating that prompt quality alone is insufficient — model capability is the dominant factor.
-- **Archethect** correctly falsified all 6 suspicious spots — a clean bill of health is also signal.
+- **Archethect** ran the full Map-Hunt-Attack methodology with MCP tool integration (Slither v0.11.5, Aderyn v0.1.9, Solodit search, Cyfrin checklist). Triaged 397 Slither + 21 Aderyn findings (0 true positives), ran 11 Solodit cross-reference queries, and evaluated 8 suspicious spots. All falsified. The Solodit cross-reference confirmed KF#8 (fee-on-transfer) as the only surviving finding — a duplicate. Zero novel findings, zero false positives escaped the devil's advocate protocol.
 - **ZeroSkills Slot Sleuth** ran a 5-phase EVM storage-safety analysis (lost writes, attacker-influenced slots, upgrade collisions, storage semantics). Clean pass — Moloch.sol avoids the vulnerability patterns this detector targets (no assembly `SSTORE`, no manual slot arithmetic, no upgradeable proxies). Useful for confirming architectural hygiene.
 - **Forefy**, **QuillShield**, **SCV Scan**, and **Auditmos** each independently confirmed subsets of the known findings, adding cross-validation confidence without novel discoveries. **EVM MCP Tools** was too basic for governance contracts (regex heuristics only).
 
 - **Qwen (Qwen3.5-Plus)** used the same SECURITY.md prompt as ChatGPT, Gemini 3, and DeepSeek V3.2 Speciale. All 3 findings are duplicates (KF#5, auto-futarchy overcommit, KF#1), with an inflated self-assessment claiming 2 novel. Competent category sweep and methodology compliance, but zero novel findings — similar depth to DeepSeek V3.2 Speciale and Gemini 3.
 
-Cross-referencing across all twenty-one scans — five independent novel findings, eighteen catalogued known findings (KF#1–18), and consistent duplicate confirmation across tools — increases confidence that the known findings represent the full attack surface.
+- **Grimoire** uses a two-pass agentic workflow — 4 parallel Sigil agents (hypothesis-driven hunters) followed by 3 parallel Familiar agents (adversarial verifiers that try to disprove each finding). Similar to Pashov Skills' multi-agent approach but with an explicit adversarial triage pass. Covered 10 of 18 known findings (56%) with zero false positives after triage. The reentrancy surface was thoroughly cleared. The Familiar pass correctly dismissed 3 false positives and adjusted severity on 2 findings. No novel findings, but the highest false-positive rejection rate of any tool.
+
+- **Certora FV** is the only formal verification engagement. 142 properties across 7 contracts provide mathematical proofs for critical invariants (sum-of-balances, state machine monotonicity, write-once fields, access control, split delegation constraints, ragequit payout bounds). The L-01 tap forfeiture finding is confirmed via intentional violation (D-L1a) and reachability witness (D-L1b) — a novel angle on ragequit interaction with DAICO, but acknowledged as intentional Moloch exit-rights design. The two informational findings (unbounded Tribute arrays, `mulDiv` phantom overflow) are both known tradeoffs.
+
+Cross-referencing across all twenty-three scans — five independent novel findings, eighteen catalogued known findings (KF#1–18), consistent duplicate confirmation across tools, and 142 formally verified invariants — increases confidence that the known findings represent the full attack surface.
 
 ### SafeSummoner
 
@@ -702,7 +708,7 @@ Cross-referencing across all twenty-one scans — five independent novel finding
 | Non-zero quorum if futarchy enabled | KF#17 | Premature NO-resolution proposal freeze |
 | Block minting sale + dynamic-only quorum | KF#2 | Supply manipulation via buy → ragequit |
 
-DAOs deployed through `SafeSummoner.safeSummon()` cannot hit the configuration footguns identified across the twenty-one audits. The `previewCalls()` function lets frontends inspect exactly which `initCalls` will execute, and `predictDAO()` returns the deterministic address before deployment. An `extraCalls` escape hatch preserves full flexibility for advanced setups (DAICO, custom allowances, etc.).
+DAOs deployed through `SafeSummoner.safeSummon()` cannot hit the configuration footguns identified across the twenty-three audits. The `previewCalls()` function lets frontends inspect exactly which `initCalls` will execute, and `predictDAO()` returns the deterministic address before deployment. An `extraCalls` escape hatch preserves full flexibility for advanced setups (DAICO, custom allowances, etc.).
 
 ### Configuration Guidance for Deployers
 
@@ -816,7 +822,7 @@ dao.ragequit(tokens, myShares, 0);
 
 ## Disclaimer
 
-*These contracts have been reviewed by twenty-one AI auditors (see [Audits](#audits)) but have not undergone a formal manual audit. No production blockers were identified, but use at your own risk. No warranties or guarantees provided.*
+*These contracts have been reviewed by twenty-three AI auditors (see [Audits](#audits)) but have not undergone a formal manual audit. No production blockers were identified, but use at your own risk. No warranties or guarantees provided.*
 
 ## License
 

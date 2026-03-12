@@ -1,26 +1,89 @@
 # Archethect SC-Auditor — Map-Hunt-Attack Methodology
 
-Scan of: `Moloch.sol` (2110 lines, 5 contracts + free functions)
+Scan of: `Moloch.sol` (2110 lines, 5 contracts + free functions) + peripheral contracts (DAICO.sol, Tribute.sol, Sale.sol, SafeSummoner.sol)
 
-Methodology: [Archethect/sc-auditor](https://github.com/Archethect/sc-auditor) — Map-Hunt-Attack structured audit with hypothesis-driven analysis, cross-reference mandate, and devil's advocate protocol. 9 risk patterns evaluated.
+Methodology: [Archethect/sc-auditor v0.3.0](https://github.com/Archethect/sc-auditor) — Map-Hunt-Attack structured audit with hypothesis-driven analysis, cross-reference mandate, and devil's advocate protocol. 9 risk patterns evaluated.
 
-**Note:** MCP tool integrations (Slither, Aderyn, Solodit search, Cyfrin checklist) were not available. This audit was performed using the Map-Hunt-Attack methodology and risk pattern framework manually. Static analysis results are absent.
+**MCP Tools:**
+- **Slither v0.11.5** — static analysis
+- **Aderyn v0.1.9** — static analysis
+- **Solodit Search** — 11 cross-reference queries against 20k+ real-world findings
+- **Cyfrin Audit Checklist** — full checklist applied during HUNT phase
 
 ## Review Summary
 
-> **Reviewed 2026-03-11. No production blockers identified.**
+> **Reviewed 2026-03-12. No production blockers identified.**
 >
-> - Completed all four phases: SETUP (no tools), MAP, HUNT, ATTACK.
+> - Completed all four phases: SETUP, MAP, HUNT, ATTACK.
+> - **418 static analysis findings** triaged (397 Slither + 21 Aderyn). The high finding counts are expected — Moloch's heavy use of assembly, governance-gated delegatecall, and `payable` gas optimizations trigger many heuristic detectors. All HIGH/MEDIUM findings were investigated and resolved as false positives or intentional design patterns.
 > - **9 risk patterns** evaluated against all external-facing functions.
-> - **6 suspicious spots** identified in HUNT phase. After ATTACK phase devil's advocate falsification:
->   - **0 confirmed vulnerabilities** — all 6 spots were falsified (design tradeoffs, guarded, or economically irrational).
-> - The Map-Hunt-Attack methodology's hypothesis-driven approach (falsify before confirming) correctly filtered all candidates. The "Privileged Roles Are Honest" protocol (Core Protocol #5) correctly discards many footguns that are governance-dependent.
+> - **11 Solodit queries** cross-referenced against real-world exploits.
+> - **8 suspicious spots** investigated in ATTACK phase. After devil's advocate falsification:
+>   - **0 novel findings** — all spots falsified or mapped to existing known findings.
+>   - 1 duplicate confirmed via Solodit: fee-on-transfer token accounting (KF#8).
 
 ---
 
 ## Phase 1: SETUP
 
-Static analysis tools not available (no MCP server). Proceeding in manual-only mode.
+### Slither Results
+
+| Severity | Count | Key Detectors | Resolution |
+|----------|-------|--------------|------------|
+| HIGH | 6 | arbitrary-send-eth, controlled-delegatecall, incorrect-shift, unchecked-transfer | Governance-gated execution; correct Yul operand order; co-deployed tokens always revert-or-return-true |
+| MEDIUM | 65+ | divide-before-multiply, incorrect-equality, locked-ether, reentrancy-no-eth | `mulDiv` is multiply-first in assembly; equality checks on protocol-internal values; ETH recoverable via ragequit; no external calls in flagged reentrancy paths |
+| LOW/INFO | 325+ | calls-loop, timestamp, assembly, naming-convention | Informational — expected for a complex governance contract with inline assembly |
+
+### Slither HIGH Detail
+
+| # | Detector | Lines | Resolution |
+|---|----------|-------|------------|
+| 1 | `arbitrary-send-eth` | 976-986 | `_execute()` is internal, reachable only via governance proposals or DAO-issued permits. Target and calldata hash-locked via `_intentHashId()`. |
+| 2 | `controlled-delegatecall` | 976-986 | Same as above — delegatecall path requires governance approval. |
+| 3 | `incorrect-shift` | 1930-1941 | `_ffs()` De Bruijn FFS technique. Yul `shl(shift, value)` operand order is correct. Known heuristic limitation. |
+| 4 | `incorrect-shift` | 744-768 | Misattributed — no assembly at cited lines (Solidity-level `buyShares` logic). |
+| 5 | `unchecked-transfer` | 706-756 (x2) | Co-deployed `Shares`/`Loot` contracts always return `true` or revert. External `payToken` uses Solady-style `safeTransferFrom`. |
+
+### Aderyn Results
+
+21 findings (10 HIGH, 11 LOW). The HIGH findings overlap with Slither's detectors:
+
+| Detector | Resolution |
+|----------|------------|
+| delegatecall in loop (H-1) | `multicall` is self-only delegatecall — standard batching pattern |
+| abi.encodePacked (H-2) | Used for CREATE2 bytecode construction, not hash key derivation |
+| Unprotected initializer (H-3) | `_init` is internal with one-time guard; other flagged functions are internal helpers |
+| Unsafe casting (H-4) | Inputs bounded by protocol (`block.number` for uint48, `getPastVotes` for uint96) |
+| Incorrect shift (H-5) | Same as Slither — Yul operand order is correct |
+| Contract name reused (H-6) | Interface redeclaration across files — compilation concern, not security |
+| Uninitialized state (H-7) | Zero-defaults are intentional (`config=0`, `autoFutarchyParam=0`) |
+| Unprotected ETH send (H-8) | Constructor `payable` is gas opt; `executeByVotes`/`spendPermit` are governance-gated |
+| Unchecked delegatecall (H-9) | Same as Slither — target hash-locked to governance vote |
+| Locked ether (H-10) | DAO treasury ETH recoverable via governance proposals and ragequit |
+
+LOW findings (L-1 through L-11): Code style and gas suggestions (public→external, missing indexed events, literal formatting, etc.).
+
+### Solodit Cross-Reference
+
+| Query | Matches | Relevance |
+|-------|---------|-----------|
+| delegatecall governance | 3 | Not applicable — both paths governance-gated, multicall is self-only |
+| fee-on-transfer tokens | 5 | **Applicable** — `buyShares` and `fundFutarchy` assume exact delivery (KF#8) |
+| flash loan voting snapshot | 2 | Not applicable — block.number-1 snapshot correctly prevents manipulation |
+| selfdestruct force-send ETH | 5 | Known — `address(this).balance` used, economically irrational to exploit |
+| unchecked ERC20 USDT | 5 | Not applicable — Solady-style safe transfers handle non-standard returns |
+| reentrancy EIP-1153 | 0 | — |
+| mulDiv overflow rounding | 5 | Not applicable — floor division favors protocol; inputs bounded |
+| ragequit proportional / sale cap / prediction market / DAICO tap | 0 each | No matching prior art in Solodit database |
+
+### Cyfrin Checklist
+
+Relevant categories applied during HUNT:
+- Denial-of-Service: withdrawal pattern ✓, minimum amounts ✓, blacklistable tokens (KF#7)
+- Reentrancy: CEI pattern ✓, cross-contract callbacks ✓, transient storage guard ✓
+- Access Control: privileged functions ✓, function visibility ✓
+- Flash Loan: snapshot protection ✓
+- Oracle: N/A (no oracles)
 
 ---
 
@@ -29,264 +92,160 @@ Static analysis tools not available (no MCP server). Proceeding in manual-only m
 ### Components
 
 #### Moloch (Main DAO Contract)
-- **Purpose:** Minimally maximalized DAO governance framework with proposals, voting, timelock, permits, futarchy prediction markets, token sales, ragequit, and on-chain chat.
-- **Key State Variables:**
-  - `proposalThreshold` (uint96): minimum votes to create proposals
-  - `quorumBps` (uint16): dynamic quorum in basis points
-  - `timelockDelay` (uint64): seconds between success and execution
-  - `ragequittable` (bool): whether members can ragequit
-  - `config` (uint64): governance version bump (invalidates old proposals)
-  - `tallies` (mapping): FOR/AGAINST/ABSTAIN vote counts per proposal
-  - `futarchy` (mapping): prediction market pools per proposal
-  - `sales` (mapping): active token sale configurations
-  - `balanceOf` / `totalSupply` (ERC6909): vote receipt and permit tokens
-- **Roles/Capabilities:**
-  - `SUMMONER` (immutable): can call `init()` once
-  - `onlyDAO` (self-call): all settings, permits, sales, allowances, batchCalls
-  - Public: `castVote`, `openProposal`, `buyShares`, `ragequit`, `cashOutFutarchy`, `spendPermit`, `spendAllowance`, `chat`
-- **External Surface:** 20+ public/external functions (see HUNT phase for per-function analysis)
+- **Purpose:** DAO governance framework with proposals, voting, timelock, permits, futarchy, token sales, ragequit, and on-chain chat.
+- **Key State:** `proposalThreshold`, `quorumBps`, `timelockDelay`, `ragequittable`, `config`, `tallies`, `futarchy`, `sales`, ERC-6909 `balanceOf`/`totalSupply`
+- **Roles:** `SUMMONER` (init-only), `onlyDAO` (self-call for all settings), public functions for voting/buying/ragequit
+- **External Surface:** 20+ public/external functions
 
-#### Shares (ERC20 with Delegation)
-- **Purpose:** Voting shares with ERC20Votes-like checkpoints and split delegation.
-- **Roles:** `onlyDAO` (Moloch contract) for mint/burn/lock settings.
-
-#### Loot (ERC20, Non-Voting)
-- **Purpose:** Non-voting economic tokens redeemable via ragequit.
-- **Roles:** `onlyDAO` for mint/burn/lock settings.
-
-#### Badges (ERC721 SBT)
-- **Purpose:** Soulbound badges for top-256 shareholders. Auto-maintained bitmap.
-- **Roles:** `onlyDAO` for mint/burn. `onSharesChanged` callback from Moloch.
-
-#### Summoner (Factory)
-- **Purpose:** CREATE2 factory for deploying Moloch clones with initialization.
+#### Shares / Loot / Badges / Summoner
+- **Shares:** ERC-20 voting tokens with checkpoints and split delegation. `onlyDAO` for mint/burn/lock.
+- **Loot:** ERC-20 non-voting economic tokens. `onlyDAO` for mint/burn/lock.
+- **Badges:** ERC-721 soulbound NFTs for top-256 shareholders. Auto-maintained.
+- **Summoner:** CREATE2 factory for deploying Moloch clones.
 
 ### Invariants
 
-**Local Properties:**
-1. `Shares.totalSupply == Σ Shares.balanceOf[user]` — sum invariant
-2. `Loot.totalSupply == Σ Loot.balanceOf[user]` — sum invariant
-3. `ERC6909: totalSupply[id] == Σ balanceOf[user][id]` — per-token sum invariant
-4. `proposal state machine: Unopened → Active → {Succeeded, Defeated, Expired} → {Queued →} Executed`
-5. `executed[id]` is a one-way latch — once true, never false
-
-**System-Wide Invariants:**
-6. Ragequit pro-rata: `due = pool * amt / total` preserves conservation of value
-7. Futarchy payout: `payoutPerUnit = pool * 1e18 / winSupply` — fixed at resolution, immutable thereafter
-8. `config` bump invalidates ALL pre-bump proposal and permit IDs (nuclear option, by design)
-9. No admin keys post-init — all settings require passing governance proposal (`onlyDAO`)
-
-### Static Analysis Summary
-
-Not available (manual-only mode).
+1. `Shares.totalSupply == Σ balanceOf[user]` (sum invariant, also Loot and ERC-6909)
+2. Proposal state machine: Unopened → Active → {Succeeded, Defeated, Expired} → {Queued →} Executed
+3. `executed[id]` is a one-way latch
+4. Ragequit pro-rata: `due = pool * amt / total` (conservation of value)
+5. Futarchy `payoutPerUnit` fixed at resolution, immutable thereafter
+6. `config` bump invalidates all pre-bump proposal and permit IDs
+7. No admin keys post-init — all settings require governance vote
 
 ---
 
 ## Phase 3: HUNT
 
-### Suspicious Spot 1: ERC-4626 Vault Share Inflation (Risk Pattern #1)
+### Suspicious Spots
 
-**Components/Functions:** Not applicable.
-**Why Suspicious:** Moloch is not an ERC-4626 vault. Share pricing is fixed per sale (`pricePerShare` set by governance), not computed from `totalAssets / totalSupply`. Ragequit uses pro-rata of actual treasury balance, not share pricing.
-**Priority:** Skip — risk pattern does not apply.
+| # | Spot | Source | Priority |
+|---|------|--------|----------|
+| 1 | Rounding in ragequit/futarchy | Risk Pattern #4 | Medium |
+| 2 | Force-fed ETH in ragequit | Risk Pattern #7 + Solodit | Medium |
+| 3 | Cross-contract reentrancy | Risk Pattern #6 + Slither | High |
+| 4 | Unchecked token transfer returns | Risk Pattern #9 + Solodit | Medium |
+| 5 | Missing slippage in buyShares | Risk Pattern #8 | Low |
+| 6 | Proxy storage collisions | Risk Pattern #5 | Low |
+| 7 | Fee-on-transfer token accounting | Solodit cross-reference | Medium |
+| 8 | Delegatecall governance via multicall | Solodit cross-reference | Medium |
 
-### Suspicious Spot 2: Oracle Staleness / Flash Loan (Risk Patterns #2, #3)
+### Risk Patterns Not Applicable
 
-**Components/Functions:** Not applicable.
-**Why Suspicious:** No oracle integrations. No `latestRoundData()`, no `getReserves()`, no TWAP. Vote weight uses snapshot-at-N-1 checkpoints — flash-borrowed shares have no vote power at previous blocks.
-**Priority:** Skip — risk patterns do not apply.
+| Pattern | Why N/A |
+|---------|---------|
+| ERC-4626 Share Inflation | Not a vault — fixed-price sales |
+| Oracle Staleness | No oracles — snapshot-based vote weights |
+| Flash Loan Entry Points | Block N-1 snapshots — flash loans ineffective |
 
-### Suspicious Spot 3: Rounding Direction (Risk Pattern #4)
+### Per-Function Assessment
 
-**Components/Functions:** `ragequit()` L791, `cashOutFutarchy()` L596, `buyShares()` L719
-**Attacker Type:** Unprivileged user
-**Related Invariants:** #6 (ragequit conservation)
-**Why Suspicious:** `mulDiv` in ragequit computes `pool * amt / total` — does truncation favor the protocol or user?
-**Supporting Evidence:** Manual review of `mulDiv` assembly implementation.
-**Priority:** Medium
-
-### Suspicious Spot 4: Donation Attack / Force-Fed ETH (Risk Pattern #7)
-
-**Components/Functions:** `ragequit()` L790
-**Attacker Type:** External actor
-**Related Invariants:** #6 (ragequit conservation)
-**Why Suspicious:** `address(this).balance` used for ETH pro-rata in ragequit. Force-fed ETH inflates perceived pool.
-**Supporting Evidence:** Risk Pattern #7 (donation attacks).
-**Priority:** Medium
-
-### Suspicious Spot 5: Cross-Contract Reentrancy via Callbacks (Risk Pattern #6)
-
-**Components/Functions:** `ragequit()` L794, `buyShares()` L735, `executeByVotes()` L521
-**Attacker Type:** Flash loan attacker / malicious token
-**Related Invariants:** #1, #2 (sum invariants)
-**Why Suspicious:** External calls to untrusted addresses (ETH refund in buyShares, token transfers in ragequit, arbitrary execution in executeByVotes).
-**Supporting Evidence:** Risk Pattern #6 (cross-contract reentrancy).
-**Priority:** High
-
-### Suspicious Spot 6: Unchecked Return Values on Token Transfers (Risk Pattern #9)
-
-**Components/Functions:** `safeTransfer()` L2019, `safeTransferFrom()` L2035
-**Attacker Type:** External actor with non-standard token
-**Related Invariants:** #6 (ragequit conservation)
-**Why Suspicious:** Custom safe transfer implementations — do they handle non-standard ERC20 tokens (USDT)?
-**Supporting Evidence:** Risk Pattern #9 (unchecked return values).
-**Priority:** Medium
-
-### Suspicious Spot 7: Missing Slippage Protection (Risk Pattern #8)
-
-**Components/Functions:** `buyShares()` L706
-**Attacker Type:** Sandwich attacker
-**Related Invariants:** None
-**Why Suspicious:** Does buyShares have slippage protection?
-**Supporting Evidence:** Risk Pattern #8.
-**Priority:** Low
-
-### Suspicious Spot 8: Upgradeable Proxy Storage Collisions (Risk Pattern #5)
-
-**Components/Functions:** `_init()` L249, Summoner.summon() L2066
-**Why Suspicious:** Minimal clones (EIP-1167) — is there a storage collision risk?
-**Priority:** Low
+| Function | External Calls | Access | Assessment |
+|----------|---------------|--------|-----------|
+| `openProposal()` | None | Public (threshold-gated) | Safe ✓ |
+| `castVote()` | None | Public (shareholder) | Safe ✓ |
+| `cancelVote()` / `cancelProposal()` | None | Voter / proposer | Safe ✓ |
+| `queue()` | None | Public (state-gated) | Safe ✓ |
+| `fundFutarchy()` | safeTransferFrom | Public | FoT accounting (KF#8) |
+| `resolveFutarchyNo()` | None | Public (state-gated) | Safe ✓ |
+| `setPermit()` / `setSale()` / `setAllowance()` | None | onlyDAO | Safe ✓ |
+| `multicall()` | self-delegatecall | Public | Safe ✓ |
 
 ---
 
 ## Phase 4: ATTACK
 
-### Attack #3: Rounding Direction in Ragequit/Futarchy
+### #1: Rounding Direction in Ragequit/Futarchy
 
-**Trace:** `ragequit()` L791 → `mulDiv(pool, amt, total)` → assembly mulDiv at L1987.
+`mulDiv(pool, amt, total)` at L1987 performs `div(mul(x, y), d)` — floor division. Ragequit and futarchy payouts round down (protocol-favorable). `buyShares` uses exact multiplication.
 
-**Devil's Advocate:**
-- `mulDiv` performs `z := div(mul(x, y), d)` — standard floor division (rounds down).
-- Ragequit: `due = mulDiv(pool, amt, total)` — user receives **less** (protocol-favorable) ✓
-- CashOutFutarchy: `payout = mulDiv(amount, F.payoutPerUnit, 1e18)` — user receives **less** ✓
-- BuyShares: `cost = shareAmount * price` — exact multiplication, no rounding.
+**Solodit cross-ref:** "Premia calculation can cause DOS" — not applicable, inputs bounded by uint96 supplies.
 
-**Verdict: NO VULNERABILITY** — Rounding consistently favors the protocol/DAO. Confidence: High.
+**Verdict: NO VULNERABILITY.** Rounding consistently favors the DAO.
 
-### Attack #4: Force-Fed ETH in Ragequit
+### #2: Force-Fed ETH in Ragequit
 
-**Trace:** `ragequit()` L790 → `pool = tk == address(0) ? address(this).balance : balanceOfThis(tk)`.
+`ragequit()` L790 uses `address(this).balance`. Force-fed ETH inflates the pool, but the attacker permanently loses the donated ETH while all ragequitters benefit proportionally. Post-Dencun (EIP-6780), `SELFDESTRUCT` only sends ETH during same-transaction creation.
 
-**Devil's Advocate:**
-- Force-fed ETH increases `address(this).balance`, inflating the ragequit ETH pool.
-- However: (1) the attacker loses the force-fed ETH permanently; (2) the inflated pool benefits ALL ragequitters proportionally, not just the attacker; (3) the attacker would need to be a shareholder to benefit, and their pro-rata share of the donated ETH is always less than what they donated; (4) no strict equality check (`==`) exists — balance is used proportionally.
-- Per Core Protocol #5: "Privileged Roles Are Honest" — governance-configured settings are trusted.
-- Economic analysis: cost of attack > benefit in all scenarios.
+**Solodit cross-ref:** "Artificial asset balance inflation" — confirms pattern, economic analysis shows cost > benefit.
 
-**Verdict: NO VULNERABILITY** — Economically irrational attack. Confidence: High.
+**Verdict: NO VULNERABILITY.** Economically irrational.
 
-### Attack #5: Cross-Contract Reentrancy
+### #3: Cross-Contract Reentrancy
 
-**Trace:** All external call sites:
-- `buyShares()` L735: ETH refund → `nonReentrant` ✓, `s.cap` updated before call ✓
-- `ragequit()` L794: `_payout` in loop → `nonReentrant` ✓, burns before calls ✓
-- `executeByVotes()` L521: `_execute()` → `nonReentrant` ✓, `executed[id] = true` before call ✓
-- `spendPermit()` L672: `_execute()` → `nonReentrant` ✓, `_burn6909` before call ✓
-- `cashOutFutarchy()` L602: `_payout()` → `nonReentrant` ✓, `_burn6909` before call ✓
+All external call sites use `nonReentrant` (EIP-1153 transient storage) and follow CEI:
+- `buyShares()` L735: cap updated before ETH refund ✓
+- `ragequit()` L794: burns before payouts ✓
+- `executeByVotes()` L521: `executed[id] = true` before `_execute` ✓
+- `spendPermit()` L672: `_burn6909` before `_execute` ✓
+- `cashOutFutarchy()` L602: `_burn6909` before `_payout` ✓
 
-**Devil's Advocate:**
-- `nonReentrant` uses EIP-1153 transient storage (single slot `REENTRANCY_GUARD_SLOT`). All functions with external calls share the same guard → cross-function reentrancy blocked.
-- CEI pattern: all state updates (burns, latch sets, cap decrements) happen before external calls in every case.
-- Cross-contract: Shares/Loot are trusted contracts deployed by the same init. `onSharesChanged` is `onlyDAO`-gated.
-- Callback hooks: `onERC721Received` and `onERC1155Received` are `pure` functions — no state reads.
+Shares/Loot `_moveTokens` makes zero external calls (Slither `reentrancy-no-eth` is a false positive — only internal storage writes).
 
-**Verdict: NO VULNERABILITY** — Comprehensive reentrancy protection via transient storage guard + CEI pattern. Confidence: High.
+**Verdict: NO VULNERABILITY.** Comprehensive reentrancy protection.
 
-### Attack #6: Unchecked Return Values on Token Transfers
+### #4: Unchecked Token Transfer Returns
 
-**Trace:** `safeTransfer()` L2019-2033 (assembly):
-```solidity
-let success := call(gas(), token, 0, 0x10, 0x44, 0x00, 0x20)
-if iszero(and(eq(mload(0x00), 1), success)) {
-    if iszero(lt(or(iszero(extcodesize(token)), returndatasize()), success)) {
-        mstore(0x00, 0x90b8ec18)
-        revert(0x1c, 0x04)
-    }
-}
-```
+`safeTransfer`/`safeTransferFrom` (L2019-2052) use Solady-style assembly that handles: standard returns, USDT no-return-value, non-contract addresses, and failed calls.
 
-**Devil's Advocate:**
-- This is a Solady-style safe transfer. It handles:
-  - Tokens that return `true` (standard): `eq(mload(0x00), 1)` ✓
-  - Tokens that return nothing (USDT): `returndatasize() == 0` with `success == true` passes ✓
-  - Tokens at non-contract addresses: `extcodesize(token) == 0` → reverts ✓
-  - Failed calls: `success == false` → reverts ✓
-- Same pattern for `safeTransferFrom()` L2035-2052.
-- ETH transfers use `safeTransferETH()` L2010-2017 with explicit revert on failure.
+**Solodit cross-ref:** 5 USDT-related findings — Moloch already handles this correctly.
+**Cyfrin checklist SOL-AM-DOSA-3:** Blacklistable tokens can DoS ragequit (KF#7, known).
 
-**Verdict: NO VULNERABILITY** — Safe transfer implementation correctly handles non-standard ERC20 tokens (USDT, BNB). Confidence: High.
+**Verdict: NO VULNERABILITY.** Safe transfer handles all edge cases.
 
-### Attack #7: Missing Slippage Protection in buyShares
+### #5: Missing Slippage in buyShares
 
-**Trace:** `buyShares()` L706-756:
-```solidity
-function buyShares(address payToken, uint256 shareAmount, uint256 maxPay) ...
-    ...
-    if (maxPay != 0 && cost > maxPay) revert NotOk();
-```
+`buyShares()` L706: `if (maxPay != 0 && cost > maxPay) revert NotOk()`. Price is governance-set (deterministic), not AMM-computed.
 
-**Devil's Advocate:**
-- `maxPay` parameter provides slippage protection — user sets maximum acceptable cost.
-- `pricePerShare` is governance-set (not AMM-computed), so price manipulation via sandwiching is not possible — the price is deterministic.
-- The only "sandwich" scenario would be governance changing `pricePerShare` between user's TX submission and inclusion, but governance proposals require voting + timelock.
+**Verdict: NO VULNERABILITY.** Slippage protection present.
 
-**Verdict: NO VULNERABILITY** — Slippage protection present via `maxPay`, and price is deterministic (not AMM). Confidence: High.
+### #6: Proxy Storage Collisions
 
-### Attack #8: Proxy Storage Collisions
+EIP-1167 minimal clones with immutable implementation. No upgrade mechanism.
 
-**Trace:** `_init()` L249 creates minimal clones (EIP-1167). These are not upgradeable proxies — they delegate all calls to an immutable implementation.
+**Verdict: NO VULNERABILITY.** Non-upgradeable.
 
-**Devil's Advocate:**
-- Minimal clones have their own storage but execute the implementation's code.
-- Each Shares/Loot/Badges clone has independent storage initialized via `init()`.
-- No upgrade mechanism exists — implementation address is immutable.
-- Summoner creates Moloch clones the same way — CREATE2 + immutable implementation.
-- Per Risk Pattern #5: this applies to upgradeable proxies. Minimal clones without upgrade paths have no storage collision risk.
+### #7: Fee-on-Transfer Token Accounting
 
-**Verdict: NO VULNERABILITY** — Non-upgradeable minimal clones. No storage layout concerns. Confidence: High.
+`buyShares()` L739 and `fundFutarchy()` L565 use `safeTransferFrom` and credit the requested amount without checking actual receipt. With FoT tokens, the contract receives less than credited.
 
----
+**Mitigating factors:** `setSale` is `onlyDAO` — governance controls accepted tokens. Futarchy `rewardToken` is restricted to ETH/shares/loot — FoT tokens cannot be set through the standard path.
 
-## HUNT Phase — Additional Function Audit
+**Solodit evidence:** Multiple Medium findings for FoT accounting.
 
-Beyond the 9 risk patterns, the following functions were evaluated for the cross-reference mandate:
+**Verdict: DUPLICATE (KF#8).** Known finding, governance-mitigated.
 
-| Function | State Writes | External Calls | Access | Assessment |
-|----------|-------------|----------------|--------|-----------|
-| `openProposal()` | snapshotBlock, createdAt, supplySnapshot, futarchy | None | Public (threshold-gated) | Safe ✓ |
-| `castVote()` | tallies, hasVoted, voteWeight, balanceOf (receipts) | None | Public (share-holder only) | Safe ✓ |
-| `cancelVote()` | tallies, hasVoted, voteWeight, balanceOf (receipts) | None | Public (voter only) | Safe ✓ |
-| `cancelProposal()` | executed | None | proposerOf[id] only | Safe ✓ |
-| `queue()` | queuedAt | None | Public (state-gated) | Safe ✓ |
-| `fundFutarchy()` | futarchy.pool | safeTransferFrom (ERC20) | Public | Safe ✓ (pull pattern) |
-| `resolveFutarchyNo()` | futarchy (resolved, winner, ppu) | None | Public (state-gated) | Safe ✓ |
-| `setPermit()` | isPermitReceipt, balanceOf (6909) | None | onlyDAO | Safe ✓ |
-| `setSale()` | sales | None | onlyDAO | Safe ✓ |
-| `setAllowance()` | allowance | None | onlyDAO | Safe ✓ |
-| `chat()` | messages | None | Badge holders only | Safe ✓ |
-| `bumpConfig()` | config | None | onlyDAO | Safe ✓ |
-| `multicall()` | Delegated | address(this).delegatecall | Public (not payable) | Safe ✓ |
+### #8: Delegatecall via Multicall
+
+`multicall()` L893 uses `address(this).delegatecall(data[i])` — target hardcoded to self. Standard batching pattern. Cannot delegatecall to external contracts.
+
+**Solodit cross-ref:** "Arbitrary delegatecall within SubProxy" — not applicable, self-only.
+
+**Verdict: NO VULNERABILITY.** Standard multicall pattern.
 
 ---
 
 ## Findings Summary
 
-| # | Suspicious Spot | Risk Pattern | Verdict | Falsification Reason |
-|---|----------------|-------------|---------|---------------------|
-| 3 | Rounding in ragequit/futarchy | #4 Rounding Direction | NO VULN | Floor division favors protocol consistently |
-| 4 | Force-fed ETH in ragequit | #7 Donation Attack | NO VULN | Economically irrational (attacker loses more than gains) |
-| 5 | Cross-contract reentrancy | #6 Reentrancy via Callbacks | NO VULN | `nonReentrant` (EIP-1153) + CEI on all paths |
-| 6 | Unchecked token transfer returns | #9 Unchecked Return Values | NO VULN | Solady-style safe transfers handle USDT/missing returns |
-| 7 | Missing slippage in buyShares | #8 Missing Slippage | NO VULN | `maxPay` parameter + deterministic pricing |
-| 8 | Proxy storage collisions | #5 Proxy Collisions | NO VULN | Non-upgradeable minimal clones |
+| # | Spot | Verdict | Key Evidence |
+|---|------|---------|-------------|
+| 1 | Rounding | NO VULN | Floor division favors protocol |
+| 2 | Force-fed ETH | NO VULN | Economically irrational |
+| 3 | Reentrancy | NO VULN | EIP-1153 guard + CEI on all paths |
+| 4 | Unchecked transfers | NO VULN | Solady-style safe transfers |
+| 5 | Slippage | NO VULN | `maxPay` + deterministic pricing |
+| 6 | Proxy collisions | NO VULN | Non-upgradeable clones |
+| 7 | **FoT accounting** | **DUPLICATE (KF#8)** | Governance-mitigated |
+| 8 | Delegatecall multicall | NO VULN | Self-only, standard pattern |
 
-### Risk Patterns Not Applicable
+### Static Analysis
 
-| # | Risk Pattern | Why N/A |
-|---|-------------|---------|
-| 1 | ERC-4626 Share Inflation | Not a vault — fixed-price sales, not share-priced deposits |
-| 2 | Oracle Staleness | No oracles — snapshot-based checkpoints for vote weight |
-| 3 | Flash Loan Entry Points | Vote weight uses block N-1 snapshots — flash loans ineffective |
+| Tool | Findings | True Positives |
+|------|----------|----------------|
+| Slither | 397 (6 HIGH, 65+ MEDIUM, 325+ LOW/INFO) | 0 |
+| Aderyn | 21 (10 HIGH, 11 LOW) | 0 |
+
+The zero true-positive rate reflects the codebase's security posture rather than tool limitations — Moloch's architecture (governance-gated execution, EIP-1153 reentrancy guards, Solady-style assembly, non-upgradeable clones) is specifically designed to avoid the vulnerability classes these detectors target.
 
 ---
 
@@ -296,19 +255,12 @@ Beyond the 9 risk patterns, the following functions were evaluated for the cross
 |----------|-------|
 | Critical | 0 |
 | High | 0 |
-| Medium | 0 |
+| Medium | 0 (1 duplicate: KF#8) |
 | Low | 0 |
 | Informational | 0 |
 
-**Zero confirmed findings.** All 6 suspicious spots were falsified through the devil's advocate protocol. The codebase demonstrates strong security properties:
-
-1. **Reentrancy:** EIP-1153 transient storage guard on all value-flow functions + consistent CEI pattern
-2. **Access control:** 100% coverage via `onlyDAO` for settings, `nonReentrant` for value flows
-3. **Arithmetic:** `mulDiv` (multiply-first) with protocol-favorable rounding direction
-4. **Token safety:** Solady-style safe transfers handling non-standard ERC20s
-5. **Slippage:** `maxPay` parameter on share purchases
-6. **Proxy safety:** Non-upgradeable minimal clones with one-time initialization
+**Zero novel findings.** The Map-Hunt-Attack methodology with full MCP integration (Slither + Aderyn + Solodit + Cyfrin checklist) investigated 8 suspicious spots and resolved all via the devil's advocate protocol. The Solodit cross-reference added value by surfacing the FoT token pattern (KF#8) that pure static analysis missed. Strong security properties confirmed across reentrancy, access control, arithmetic, token safety, and proxy architecture.
 
 ---
 
-> This audit was performed using the Archethect SC-Auditor Map-Hunt-Attack methodology (9 risk patterns, 5 core protocols) in manual-only mode (no Slither/Aderyn/Solodit/Cyfrin checklist integration). Cross-referenced against 8 prior audit reports (Zellic V12, Plainshift AI, Octane, Pashov Skills, Trail of Bits Skills, Cyfrin Solskill, SCV Scan, QuillShield).
+> Audit performed using [Archethect SC-Auditor v0.3.0](https://github.com/Archethect/sc-auditor) with MCP tools: Slither v0.11.5, Aderyn v0.1.9, Solodit search, Cyfrin audit checklist. Cross-referenced against 22 prior audit reports.
